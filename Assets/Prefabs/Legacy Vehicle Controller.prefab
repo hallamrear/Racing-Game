@@ -13,7 +13,7 @@ GameObject:
   - component: {fileID: 2248499723913083018}
   - component: {fileID: 8305121278240115792}
   m_Layer: 10
-  m_Name: Test Vehicle
+  m_Name: Legacy Vehicle Controller
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0

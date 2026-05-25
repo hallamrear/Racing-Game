@@ -1,4 +1,8 @@
+using System.Collections.Generic;
+using TMPro;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.VisualScripting;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -45,10 +49,34 @@ public class VehicleController : MonoBehaviour
     [SerializeField]
     LayerMask m_SuspensionLayerMask;
 
+    Vector3 m_SuspensionForce;
+    Vector3 m_TractionForce;
+    Vector3 m_LateralForce;
+    float m_CurrentSlipRatio;
+    float m_CurrentSlipAngle;
     PlayerInput m_PlayerInput;
+
+    [Header("Torque Curve")]
+    [SerializeField] float m_TorqueCurve_a;
+    [SerializeField] float m_TorqueCurve_b;
+    [SerializeField] float m_TorqueCurve_c;
+    [SerializeField] float m_TorqueCurve_d;
+    [SerializeField] float m_TorqueCurve_f;
+
+    [Header("Gearing")]
+    [SerializeField] List<float> m_GearRatios;
+
+    [Header("Engine")]
+    private float m_CurrentRPM;
 
     void Start()
     {
+        m_CurrentRPM = 0.0f;
+        m_SuspensionForce = Vector3.zero;
+        m_TractionForce = Vector3.zero;
+        m_LateralForce = Vector3.zero;
+        m_CurrentSlipRatio = 0.0f;
+        m_CurrentSlipAngle = 0.0f;
         m_ForceSum = Vector3.zero;
         m_SteeringAngle = 0.0f;
         m_Rigidbody = GetComponent<Rigidbody>();
@@ -109,13 +137,77 @@ public class VehicleController : MonoBehaviour
         m_AccelerationInput = 0.0f;
     }
 
+    float GetTorqueCurveApproximation()
+    {
+        float e = Mathf.Exp(1f);
+        float x = 0.0f; //current speed;
+
+        float numerator = 0.0f - Mathf.Pow(m_TorqueCurve_c * (x - m_TorqueCurve_d), 2.0f);
+        float fSqr = m_TorqueCurve_f * m_TorqueCurve_f;
+        float division = (numerator / fSqr);
+
+        return (m_TorqueCurve_a - m_TorqueCurve_b) * e * division + m_TorqueCurve_b;
+    }
+
+
+    private float CalculateEngineRPMDifferentialEquation()
+    {
+        float m_EngineFrictionForce = 0.0f;
+        float m_EngineBrakingForce = 0.0f;
+        float m_ExpectedRPMFromWheel = 0.0f;
+        float k0T = GetTorqueCurveApproximation() * m_AccelerationInput;
+        float k1Rd = m_EngineBrakingForce * (m_ExpectedRPMFromWheel - m_CurrentRPM);
+        float k2Rt = m_EngineFrictionForce * m_CurrentRPM;
+        return (k0T + k1Rd - k2Rt);
+    }
+
+    private void WheelAngularVelocityDifferentialEquation()
+    {
+        float m_ExpectedAngularVelocityFromCurrentRPM = 0.0f;
+        float m_CurrentAngularVelocity = 0.0f;
+        float m_BrakingForceScalar = 0.0f;
+        float m_RoadFriction = 0.0f;
+        float k0AVd = GetTorqueCurveApproximation() * (m_ExpectedAngularVelocityFromCurrentRPM - m_CurrentAngularVelocity);
+        float k1B = m_BrakingForceScalar * m_BrakingInput;
+        float k2AV = m_RoadFriction * m_CurrentAngularVelocity;
+    }
+
+    private float GetPacejkaValue(float longitudinalSlipRatio)
+    {
+        float m_Pacejka_d = 1.0f;
+        float m_Pacejka_c = 2.6f;
+        float m_Pacejka_e = 0.8f;
+        return m_Pacejka_d * (Mathf.Sin(m_Pacejka_c * Mathf.Atan(longitudinalSlipRatio - m_Pacejka_e * (longitudinalSlipRatio - Mathf.Atan(longitudinalSlipRatio)))));
+    }
+
+    private float GetTractionForce(bool isWheelTouching, float wheelAngularVelocity, float wheelLinearVelocity)
+    {
+        var contactVelocity = wheelAngularVelocity * m_WheelRadius;
+        var rollingVelocity = wheelLinearVelocity / m_WheelRadius;
+        float slip = contactVelocity - rollingVelocity;
+        float slipRatio = 0.0f;
+
+        if(isWheelTouching)
+        {
+            slipRatio = (contactVelocity * m_WheelRadius) / rollingVelocity - 1;
+        }
+
+        float tractionForce = GetPacejkaValue(slipRatio);
+
+        return tractionForce;
+    }
+
+
     private void UpdateEngine()
     {
-
+        m_CurrentRPM += CalculateEngineRPMDifferentialEquation();
     }
 
     private void UpdateChassis()
     {
+        m_ForceSum = (m_SuspensionForce) + (m_TractionForce * m_CurrentSlipRatio) + (m_LateralForce * m_CurrentSlipAngle);
+
+
         if (m_Rigidbody && m_ForceSum.sqrMagnitude > 0.001f)
         {
             m_Rigidbody.AddForce(m_ForceSum);
@@ -125,6 +217,7 @@ public class VehicleController : MonoBehaviour
 
     private void FixedUpdate()
     {
+        Debug.Log(m_CurrentRPM);
         m_ForceSum = Vector3.zero;
 
         UpdateEngine();
